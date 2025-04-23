@@ -1,3 +1,4 @@
+import os
 import asyncio
 from flask import Flask
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -5,170 +6,169 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     ContextTypes,
+    MessageHandler,
     CallbackQueryHandler,
+    filters,
 )
 from pymongo import MongoClient
-import os
 
-# === MongoDB Setup ===
-MONGO_URI = "mongodb+srv://criminalboyz10:l6RLBnBtohoyjPgh@cluster0.d9ifbhj.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"
+# --- Setup ---
+TOKEN = os.getenv("BOT_TOKEN", "your-telegram-bot-token")
+MONGO_URI = os.getenv("MONGO_URI", "your-mongodb-uri")
+
 client = MongoClient(MONGO_URI)
-db = client["telegram_bot"]
+db = client["battle_bot"]
 users = db["users"]
-admins = db["admins"]
-battles = db["battles"]
+admin_data = db["admins"]
 
-# === Flask Server for Koyeb ===
 app = Flask(__name__)
 
-@app.route('/')
-def home():
-    return "Bot is alive!"
+# --- Utility functions ---
 
-# === Helper Functions ===
 def is_admin(user_id):
-    return admins.find_one({"user_id": user_id}) is not None
+    return admin_data.find_one({"user_id": user_id}) is not None
 
 def get_or_create_user(user_id, username):
     user = users.find_one({"user_id": user_id})
     if not user:
-        user = {"user_id": user_id, "username": username, "coins": 100}
-        users.insert_one(user)
-    return user
+        users.insert_one({"user_id": user_id, "username": username, "coins": 100})
+    return users.find_one({"user_id": user_id})
 
-def update_user_coins(user_id, coins):
-    users.update_one({"user_id": user_id}, {"$set": {"coins": coins}})
+def update_coins(user_id, amount):
+    users.update_one({"user_id": user_id}, {"$inc": {"coins": amount}})
 
-def add_admin(user_id, username):
-    admins.update_one({"user_id": user_id}, {"$set": {"username": username}}, upsert=True)
+def get_leaderboard():
+    top_users = users.find().sort("coins", -1).limit(10)
+    return "\n".join([f"{u['username']}: {u['coins']} coins" for u in top_users])
 
-# === Telegram Bot ===
-TOKEN = "7677492647:AAEnswiLDx0A2zVD9cIUOM-Jv_xlm_mY_Ns"  # Replace with your bot token
-bot_app = ApplicationBuilder().token(TOKEN).build()
+# --- Bot commands ---
 
-# === Handlers ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = get_or_create_user(update.effective_user.id, update.effective_user.username)
-    await update.message.reply_text(f"Welcome, {user['username']}! You have {user['coins']} coins.")
+    user = update.effective_user
+    get_or_create_user(user.id, user.username)
+    await update.message.reply_text("Welcome to the Battle Bot!")
 
-async def add_admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id == 5925363190:
-        add_admin(update.effective_user.id, update.effective_user.username)
-        await update.message.reply_text("You are now an admin.")
-    else:
-        await update.message.reply_text("You're not authorized to do this.")
+async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = get_or_create_user(update.effective_user.id, update.effective_user.username)
+    await update.message.reply_text(f"You have {user['coins']} coins.")
+
+async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = get_leaderboard()
+    await update.message.reply_text(f"🏆 Leaderboard 🏆\n{text}")
+
+async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("Only admins can use this command.")
+    
+    if not update.message.reply_to_message:
+        return await update.message.reply_text("Reply to the user you want to make admin.")
+    
+    admin_data.insert_one({"user_id": update.message.reply_to_message.from_user.id})
+    await update.message.reply_text("User has been added as an admin.")
+
+async def add_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        return await update.message.reply_text("Only admins can use this command.")
+    
+    if len(context.args) != 1 or not context.args[0].isdigit():
+        return await update.message.reply_text("Usage: /addcoins <amount>")
+    
+    amount = int(context.args[0])
+    if not update.message.reply_to_message:
+        return await update.message.reply_text("Reply to the user to add coins.")
+    
+    update_coins(update.message.reply_to_message.from_user.id, amount)
+    await update.message.reply_text("Coins added.")
+
+battle_requests = {}
 
 async def battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) != 1 or not context.message.reply_to_message:
-        await update.message.reply_text("Use /battle <coins> in reply to a user.")
-        return
-    try:
-        coins = int(context.args[0])
-    except ValueError:
-        await update.message.reply_text("Invalid coin amount.")
-        return
-
     user1 = update.effective_user
-    user2 = context.message.reply_to_message.from_user
-    u1 = get_or_create_user(user1.id, user1.username)
-    u2 = get_or_create_user(user2.id, user2.username)
+    if len(context.args) != 2:
+        return await update.message.reply_text("Usage: /battle <amount> @opponent")
 
-    if u1["coins"] < coins or u2["coins"] < coins:
-        await update.message.reply_text("Both players must have enough coins.")
-        return
+    try:
+        amount = int(context.args[0])
+    except ValueError:
+        return await update.message.reply_text("Invalid coin amount.")
 
-    battles.update_one(
-        {"user1": user1.id, "user2": user2.id},
-        {"$set": {
-            "user1": user1.id,
-            "user2": user2.id,
-            "coins": coins
-        }},
-        upsert=True
-    )
+    if not update.message.entities:
+        return await update.message.reply_text("Mention an opponent using @username.")
 
-    keyboard = [
-        [InlineKeyboardButton("Start Battle", callback_data=f"start|{user1.id}|{user2.id}")],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    opponent = None
+    for entity in update.message.entities:
+        if entity.type == "mention":
+            mention = update.message.text[entity.offset:entity.offset + entity.length]
+            opponent = mention.replace("@", "")
+
+    if not opponent:
+        return await update.message.reply_text("Opponent not found.")
+
+    user1_data = get_or_create_user(user1.id, user1.username)
+    opponent_data = users.find_one({"username": opponent})
+
+    if not opponent_data:
+        return await update.message.reply_text("Opponent not registered.")
+
+    if user1_data["coins"] < amount or opponent_data["coins"] < amount:
+        return await update.message.reply_text("Both players must have enough coins.")
+
+    battle_id = f"{user1.id}_{opponent_data['user_id']}_{amount}"
+    battle_requests[battle_id] = (user1_data["user_id"], opponent_data["user_id"], amount)
+
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Start Battle", callback_data=f"start_{battle_id}")]
+    ])
     await update.message.reply_text(
-        f"Battle request:\n{user1.mention_html()} vs {user2.mention_html()}\nWager: {coins} coins",
-        reply_markup=reply_markup,
-        parse_mode="HTML"
+        f"⚔️ {user1.username} vs {opponent_data['username']} for {amount} coins each!",
+        reply_markup=keyboard
     )
 
-async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
 
-    if data.startswith("start"):
-        _, uid1, uid2 = data.split("|")
-        uid1, uid2 = int(uid1), int(uid2)
-        battle = battles.find_one({"user1": uid1, "user2": uid2})
+    if data.startswith("start_"):
+        battle_id = data.replace("start_", "")
+        if not is_admin(query.from_user.id):
+            return await query.edit_message_text("Only admins can start battles.")
 
-        if not battle:
-            await query.edit_message_text("Battle not found.")
-            return
+        if battle_id not in battle_requests:
+            return await query.edit_message_text("Battle request not found.")
 
-        keyboard = [
-            [InlineKeyboardButton("Winner: User 1", callback_data=f"win|{uid1}|{uid2}")],
-            [InlineKeyboardButton("Winner: User 2", callback_data=f"win|{uid2}|{uid1}")],
-            [InlineKeyboardButton("Draw", callback_data=f"draw|{uid1}|{uid2}")]
-        ]
-        markup = InlineKeyboardMarkup(keyboard)
+        user1_id, user2_id, amount = battle_requests.pop(battle_id)
+        winner = user1_id if os.urandom(1)[0] % 2 == 0 else user2_id
+        loser = user2_id if winner == user1_id else user1_id
+
+        update_coins(winner, amount)
+        update_coins(loser, -amount)
+
+        user1 = users.find_one({"user_id": user1_id})
+        user2 = users.find_one({"user_id": user2_id})
+        winner_user = users.find_one({"user_id": winner})
+
         await query.edit_message_text(
-            f"Battle Started!\n<u>User 1</u>: <code>{uid1}</code>\n<u>User 2</u>: <code>{uid2}</code>",
-            reply_markup=markup,
-            parse_mode="HTML"
+            f"⚔️ {user1['username']} vs {user2['username']} ⚔️\n"
+            f"🏆 Winner: {winner_user['username']} (+{amount} coins)"
         )
 
-    elif data.startswith("win"):
-        winner, loser = map(int, data.split("|")[1:])
-        battle = battles.find_one({"user1": winner, "user2": loser}) or battles.find_one({"user1": loser, "user2": winner})
-        coins = battle["coins"]
-        users.update_one({"user_id": winner}, {"$inc": {"coins": coins}})
-        users.update_one({"user_id": loser}, {"$inc": {"coins": -coins}})
-        await query.edit_message_text(f"Winner is <code>{winner}</code>! (+{coins} coins)", parse_mode="HTML")
+# --- Web server for Koyeb ---
+@app.route("/")
+def home():
+    return "Bot is running!"
 
-    elif data.startswith("draw"):
-        uid1, uid2 = map(int, data.split("|")[1:])
-        await query.edit_message_text("Battle ended in a draw.")
-
-async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    top = list(users.find().sort("coins", -1).limit(10))
-    text = "<b>Leaderboard:</b>\n"
-    for i, user in enumerate(top, 1):
-        text += f"{i}. @{user['username']} - {user['coins']} coins\n"
-    await update.message.reply_text(text, parse_mode="HTML")
-
-async def give_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Admins only.")
-        return
-    if len(context.args) != 2 or not context.message.reply_to_message:
-        await update.message.reply_text("Use /give <coins> as reply.")
-        return
-    try:
-        coins = int(context.args[0])
-    except:
-        await update.message.reply_text("Invalid coin amount.")
-        return
-    target = context.message.reply_to_message.from_user
-    user = get_or_create_user(target.id, target.username)
-    users.update_one({"user_id": target.id}, {"$inc": {"coins": coins}})
-    await update.message.reply_text(f"Gave {coins} coins to @{user['username']}.")
-
-# === Register Handlers ===
-bot_app.add_handler(CommandHandler("start", start))
-bot_app.add_handler(CommandHandler("addadmin", add_admin_cmd))
-bot_app.add_handler(CommandHandler("battle", battle))
-bot_app.add_handler(CommandHandler("leaderboard", leaderboard))
-bot_app.add_handler(CommandHandler("give", give_coins))
-bot_app.add_handler(CallbackQueryHandler(handle_buttons))
-
-# === Run Both Bot and Flask ===
+# --- Main ---
 async def run_bot():
+    bot_app = ApplicationBuilder().token(TOKEN).build()
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CommandHandler("balance", balance))
+    bot_app.add_handler(CommandHandler("leaderboard", leaderboard))
+    bot_app.add_handler(CommandHandler("addadmin", add_admin))
+    bot_app.add_handler(CommandHandler("addcoins", add_coins))
+    bot_app.add_handler(CommandHandler("battle", battle))
+    bot_app.add_handler(CallbackQueryHandler(handle_callback))
+
     await bot_app.run_polling()
 
 if __name__ == "__main__":
