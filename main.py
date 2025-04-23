@@ -5,7 +5,7 @@ import os
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
-ADMIN_IDS = [5925363190]  # Replace with your Telegram ID
+ADMIN_IDS = [5925363190]  # Add your Telegram ID
 
 client = pymongo.MongoClient(MONGO_URI)
 db = client["battle_bot"]
@@ -30,54 +30,82 @@ def get_user(user_obj):
 
 async def start_battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message:
-        await update.message.reply_text("Reply to someone's message to start a battle!")
+        await update.message.reply_text("Reply to a user to start a battle.")
         return
 
+    if len(context.args) != 1 or not context.args[0].isdigit():
+        await update.message.reply_text("Usage: /battle <amount>\nExample: /battle 50")
+        return
+
+    amount = int(context.args[0])
     user1 = update.message.from_user
     user2 = update.message.reply_to_message.from_user
 
     u1_data = get_user(user1)
     u2_data = get_user(user2)
 
-    wager = 5
-    if u1_data["coins"] < wager or u2_data["coins"] < wager:
-        await update.message.reply_text("Both players need at least 5 coins to battle!")
+    if u1_data["coins"] < amount or u2_data["coins"] < amount:
+        await update.message.reply_text("Both users must have at least {} coins.".format(amount))
         return
 
-    # Deduct wager immediately
-    users.update_one({"user_id": user1.id}, {"$inc": {"coins": -wager}})
-    users.update_one({"user_id": user2.id}, {"$inc": {"coins": -wager}})
-
-    keyboard = [
-        [
-            InlineKeyboardButton("Win: " + user1.first_name, callback_data=f"win_{user1.id}_{user2.id}"),
-            InlineKeyboardButton("Draw", callback_data=f"draw_{user1.id}_{user2.id}"),
-            InlineKeyboardButton("Win: " + user2.first_name, callback_data=f"win_{user2.id}_{user1.id}"),
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    msg = f"⚔️ <b>Battle Initiated!</b> ⚔️\n\n{user1.mention_html()} VS {user2.mention_html()}\n\nEach wagered {wager} coins!\nChoose the result:"
-    await update.message.reply_html(msg, reply_markup=reply_markup)
+    # Store battle data in callback data
+    start_button = InlineKeyboardButton("Start Battle", callback_data=f"begin_{user1.id}_{user2.id}_{amount}")
+    reply_markup = InlineKeyboardMarkup([[start_button]])
+    await update.message.reply_text(
+        f"⚔️ Battle Request ⚔️\n\n{user1.mention_html()} vs {user2.mention_html()}\n\nWager: {amount} coins each.\n\nWaiting for admin approval...",
+        reply_markup=reply_markup,
+        parse_mode="HTML"
+    )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
-    if user_id not in ADMIN_IDS:
-        await query.edit_message_text("Only admins can choose the result.")
-        return
 
-    data = query.data.split("_")
-    action, winner_id, loser_id = data[0], int(data[1]), int(data[2])
-    wager = 5
-    if action == "win":
-        users.update_one({"user_id": winner_id}, {"$inc": {"wins": 1, "coins": wager * 2}})
-        users.update_one({"user_id": loser_id}, {"$inc": {"losses": 1}})
-        await query.edit_message_text("Result: Victory granted! Winner takes all the coins!")
-    elif action == "draw":
-        users.update_one({"user_id": winner_id}, {"$inc": {"coins": wager}})
-        users.update_one({"user_id": loser_id}, {"$inc": {"coins": wager}})
-        await query.edit_message_text("Result: It's a draw! Coins refunded.")
+    if query.data.startswith("begin_"):
+        if user_id not in ADMIN_IDS:
+            await query.edit_message_text("Only admins can start battles.")
+            return
+
+        _, uid1, uid2, amount = query.data.split("_")
+        uid1, uid2, amount = int(uid1), int(uid2), int(amount)
+
+        users.update_one({"user_id": uid1}, {"$inc": {"coins": -amount}})
+        users.update_one({"user_id": uid2}, {"$inc": {"coins": -amount}})
+
+        u1 = users.find_one({"user_id": uid1})
+        u2 = users.find_one({"user_id": uid2})
+
+        keyboard = [
+            [
+                InlineKeyboardButton(f"Win: @{u1['username']}", callback_data=f"win_{uid1}_{uid2}_{amount}"),
+                InlineKeyboardButton("Draw", callback_data=f"draw_{uid1}_{uid2}_{amount}"),
+                InlineKeyboardButton(f"Win: @{u2['username']}", callback_data=f"win_{uid2}_{uid1}_{amount}"),
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            f"⚔️ <b>Battle Started</b> ⚔️\n\n@{u1['username']} vs @{u2['username']}\nWager: {amount} coins each.\nChoose the result:",
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
+
+    elif query.data.startswith("win_") or query.data.startswith("draw_"):
+        if user_id not in ADMIN_IDS:
+            await query.edit_message_text("Only admins can choose the result.")
+            return
+
+        action, uid1, uid2, amount = query.data.split("_")
+        uid1, uid2, amount = int(uid1), int(uid2), int(amount)
+
+        if action == "win":
+            users.update_one({"user_id": uid1}, {"$inc": {"wins": 1, "coins": amount * 2}})
+            users.update_one({"user_id": uid2}, {"$inc": {"losses": 1}})
+            await query.edit_message_text(f"🏆 <b>Winner:</b> @{users.find_one({'user_id': uid1})['username']} wins {amount * 2} coins!", parse_mode="HTML")
+        else:  # draw
+            users.update_one({"user_id": uid1}, {"$inc": {"coins": amount}})
+            users.update_one({"user_id": uid2}, {"$inc": {"coins": amount}})
+            await query.edit_message_text("🤝 It's a draw! Both players refunded.", parse_mode="HTML")
 
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     top = users.find().sort("wins", -1).limit(10)
@@ -98,7 +126,7 @@ async def admin_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args or not context.args[0].lstrip("+-").isdigit():
-        await update.message.reply_text("Usage:\n/coins @username +10\nor reply to user with /coins +10")
+        await update.message.reply_text("Usage:\n/coins +10 (when replying)\nor /coins @username +10")
         return
 
     amount = int(context.args[0])
