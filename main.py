@@ -2,7 +2,18 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 import pymongo
 import os
+from flask import Flask
+import threading
 
+# Initialize Flask app
+app = Flask(__name__)
+
+# Health check route for Koyeb
+@app.route('/health')
+def health():
+    return "OK"
+
+# Initialize Telegram bot
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 client = pymongo.MongoClient(MONGO_URI)
@@ -180,14 +191,23 @@ async def admin_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = f"{'Gave' if amount > 0 else 'Took'} {abs(amount)} coins {'to' if amount > 0 else 'from'} @{target_user['username']}"
     await update.message.reply_text(msg)
 
-app = ApplicationBuilder().token(BOT_TOKEN).build()
-app.add_handler(CommandHandler("battle", start_battle))
-app.add_handler(CommandHandler("leaderboard", leaderboard))
-app.add_handler(CommandHandler("balance", balance))
-app.add_handler(CommandHandler("addadmin", add_admin))
-app.add_handler(CommandHandler("removeadmin", remove_admin))
-app.add_handler(CommandHandler("coins", admin_coins))
-app.add_handler(CallbackQueryHandler(button_handler))
+# Initialize the bot application
+bot_app = ApplicationBuilder().token(BOT_TOKEN).build()
+bot_app.add_handler(CommandHandler("battle", start_battle))
+bot_app.add_handler(CommandHandler("leaderboard", leaderboard))
+bot_app.add_handler(CommandHandler("balance", balance))
+bot_app.add_handler(CommandHandler("addadmin", add_admin))
+bot_app.add_handler(CommandHandler("removeadmin", remove_admin))
+bot_app.add_handler(CommandHandler("coins", admin_coins))
+bot_app.add_handler(CallbackQueryHandler(button_handler))
 
+# Run Flask app in a separate thread
+def run_flask():
+    app.run(host="0.0.0.0", port=8000)
+
+# Run the Flask app in a separate thread for health check
+threading.Thread(target=run_flask).start()
+
+# Run Telegram bot
 if __name__ == "__main__":
-    app.run_polling()
+    bot_app.run_polling()
