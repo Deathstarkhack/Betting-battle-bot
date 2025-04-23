@@ -11,8 +11,8 @@ users = db["users"]
 admin_data = db["admins"]
 
 def is_admin(user_id):
-return admin_data.find_one({"user_id": user_id}) is not None
-
+    return admin_data.find_one({"user_id": user_id}) is not None
+  
 def get_user(user_obj):
 user_id = user_obj.id
 username = user_obj.username or f"id_{user_id}"
@@ -190,5 +190,5 @@ app.add_handler(CommandHandler("removeadmin", remove_admin))
 app.add_handler(CommandHandler("coins", admin_coins))
 app.add_handler(CallbackQueryHandler(button_handler))
 
-if name == "main":
+if __name__ == "__main__":
 app.run_polling()
