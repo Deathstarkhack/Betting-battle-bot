@@ -5,11 +5,13 @@ import os
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
-ADMIN_IDS = [5925363190]  # Add your Telegram ID
-
 client = pymongo.MongoClient(MONGO_URI)
 db = client["battle_bot"]
 users = db["users"]
+admin_data = db["admins"]
+
+def is_admin(user_id):
+    return admin_data.find_one({"user_id": user_id}) is not None
 
 def get_user(user_obj):
     user_id = user_obj.id
@@ -63,9 +65,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
 
     if query.data.startswith("begin_"):
-        if user_id not in ADMIN_IDS:
-            await query.edit_message_text("Only admins can start battles.")
-            return
+        if not is_admin(user_id):
+            return  # silently ignore
 
         _, uid1, uid2, amount = query.data.split("_")
         uid1, uid2, amount = int(uid1), int(uid2), int(amount)
@@ -91,9 +92,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
     elif query.data.startswith("win_") or query.data.startswith("draw_"):
-        if user_id not in ADMIN_IDS:
-            await query.edit_message_text("Only admins can choose the result.")
-            return
+        if not is_admin(user_id):
+            return  # silently ignore
 
         action, uid1, uid2, amount = query.data.split("_")
         uid1, uid2, amount = int(uid1), int(uid2), int(amount)
@@ -120,9 +120,39 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = f"You have {user['coins']} coins.\nWins: {user['wins']}, Losses: {user['losses']}"
     await update.message.reply_text(msg)
 
+async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.message.from_user.id):
+        await update.message.reply_text("Only admins can add other admins.")
+        return
+
+    if update.message.reply_to_message:
+        user = update.message.reply_to_message.from_user
+        if not is_admin(user.id):
+            admin_data.insert_one({"user_id": user.id})
+            await update.message.reply_text(f"Added @{user.username or user.id} as admin.")
+        else:
+            await update.message.reply_text("User is already an admin.")
+    else:
+        await update.message.reply_text("Reply to the user you want to add as admin.")
+
+async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.message.from_user.id):
+        await update.message.reply_text("Only admins can remove other admins.")
+        return
+
+    if update.message.reply_to_message:
+        user = update.message.reply_to_message.from_user
+        if is_admin(user.id):
+            admin_data.delete_one({"user_id": user.id})
+            await update.message.reply_text(f"Removed @{user.username or user.id} as admin.")
+        else:
+            await update.message.reply_text("User is not an admin.")
+    else:
+        await update.message.reply_text("Reply to the user you want to remove as admin.")
+
 async def admin_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.from_user.id not in ADMIN_IDS:
-        await update.message.reply_text("Only admins can use this command.")
+    if not is_admin(update.message.from_user.id):
+        await update.message.reply_text("Only admins can give coins.")
         return
 
     if not context.args or not context.args[0].lstrip("+-").isdigit():
@@ -154,6 +184,8 @@ app = ApplicationBuilder().token(BOT_TOKEN).build()
 app.add_handler(CommandHandler("battle", start_battle))
 app.add_handler(CommandHandler("leaderboard", leaderboard))
 app.add_handler(CommandHandler("balance", balance))
+app.add_handler(CommandHandler("addadmin", add_admin))
+app.add_handler(CommandHandler("removeadmin", remove_admin))
 app.add_handler(CommandHandler("coins", admin_coins))
 app.add_handler(CallbackQueryHandler(button_handler))
 
