@@ -1,2 +1,2 @@
 python-telegram-bot==20.0
-flask==2.2.2
+pymongo==4.3.3  # Add pymongo to ensure MongoDB functionality
