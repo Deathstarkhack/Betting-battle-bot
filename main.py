@@ -1,11 +1,11 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 import pymongo
 import os
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
-ADMIN_IDS = [5925363190]  # Add your Telegram ID
+ADMIN_IDS = [5925363190]  # <-- You are the admin
 
 client = pymongo.MongoClient(MONGO_URI)
 db = client["battle_bot"]
@@ -41,7 +41,7 @@ async def start_battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    msg = f"⚔️ *Battle Initiated!* ⚔️\n\n{user1.mention_html()} VS {user2.mention_html()}\n\nChoose the result:"
+    msg = f"⚔️ <b>Battle Initiated!</b> ⚔️\n\n{user1.mention_html()} VS {user2.mention_html()}\n\nChoose the result:"
     await update.message.reply_html(msg, reply_markup=reply_markup)
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -63,15 +63,48 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     top = users.find().sort("wins", -1).limit(10)
-    msg = "🏆 *Leaderboard* 🏆\n"
+    msg = "🏆 <b>Leaderboard</b> 🏆\n"
     for idx, user in enumerate(top, 1):
         msg += f"{idx}. ID {user['user_id']} — Wins: {user['wins']}, Coins: {user['coins']}\n"
-    await update.message.reply_text(msg, parse_mode='Markdown')
+    await update.message.reply_html(msg)
+
+async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.message.from_user.id
+    user = get_user(uid)
+    msg = f"You have {user['coins']} coins.\nWins: {user['wins']}, Losses: {user['losses']}"
+    await update.message.reply_text(msg)
+
+async def admin_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id not in ADMIN_IDS:
+        await update.message.reply_text("Only admins can use this command.")
+        return
+
+    if len(context.args) != 2 or not context.args[1].lstrip("+-").isdigit():
+        await update.message.reply_text("Usage: /coins @username +10 or -5")
+        return
+
+    entities = update.message.entities
+    mention = next((e for e in entities if e.type == "mention"), None)
+    if not mention:
+        await update.message.reply_text("Tag the user using @username.")
+        return
+
+    username = update.message.text[mention.offset+1 : mention.offset+mention.length]
+    target_user = users.find_one({"username": username})
+    if not target_user:
+        await update.message.reply_text("User not found in database.")
+        return
+
+    amount = int(context.args[1])
+    users.update_one({"username": username}, {"$inc": {"coins": amount}})
+    await update.message.reply_text(f"Gave {amount} coins to @{username}")
 
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 app.add_handler(CommandHandler("battle", start_battle))
-app.add_handler(CallbackQueryHandler(button_handler))
 app.add_handler(CommandHandler("leaderboard", leaderboard))
+app.add_handler(CommandHandler("balance", balance))
+app.add_handler(CommandHandler("coins", admin_coins))
+app.add_handler(CallbackQueryHandler(button_handler))
 
 if __name__ == "__main__":
     app.run_polling()
