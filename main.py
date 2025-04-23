@@ -1,197 +1,105 @@
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackContext, CallbackQueryHandler
 import pymongo
 import os
 
+# Bot token and Mongo URI
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 
+# Connect to MongoDB
 client = pymongo.MongoClient(MONGO_URI)
-db = client["battle_bot"]
-users = db["users"]
-admin_data = db["admins"]
+db = client['battle_bot']
+users = db['users']
 
-def is_admin(user_id):
-    return admin_data.find_one({"user_id": user_id}) is not None
+# Set your Telegram ID as admin
+ADMINS = [5925363190]
 
-def get_user(user_obj):
-    user_id = user_obj.id
-    username = user_obj.username or f"id_{user_id}"
-    user = users.find_one({"user_id": user_id})
-    if not user:
-        users.insert_one({
-            "user_id": user_id,
-            "username": username,
-            "coins": 5,
-            "wins": 0,
-            "losses": 0
-        })
-        user = users.find_one({"user_id": user_id})
-    else:
-        users.update_one({"user_id": user_id}, {"$set": {"username": username}})
-    return user
+# Enable logging
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-async def start_battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.reply_to_message:
-        await update.message.reply_text("Reply to a user to start a battle.")
-        return
+# Helper to ensure user exists
+def ensure_user(user_id, username):
+    if users.find_one({"_id": user_id}) is None:
+        users.insert_one({"_id": user_id, "username": username, "coins": 100})
 
-    if len(context.args) != 1 or not context.args[0].isdigit():
-        await update.message.reply_text("Usage: /battle <amount>\nExample: /battle 50")
-        return
+# Start command
+async def start(update: Update, context: CallbackContext.DEFAULT_TYPE):
+    user = update.effective_user
+    ensure_user(user.id, user.username)
+    await update.message.reply_text("Welcome to the Battle Bot!")
 
-    amount = int(context.args[0])
-    user1 = update.message.from_user
-    user2 = update.message.reply_to_message.from_user
+# /battle command
+async def battle(update: Update, context: CallbackContext.DEFAULT_TYPE):
+    user = update.effective_user
+    ensure_user(user.id, user.username)
 
-    u1_data = get_user(user1)
-    u2_data = get_user(user2)
+    if not context.args:
+        return await update.message.reply_text("Usage: /battle <coins>")
 
-    if u1_data["coins"] < amount or u2_data["coins"] < amount:
-        await update.message.reply_text(f"Both users must have at least {amount} coins.")
-        return
+    try:
+        amount = int(context.args[0])
+    except ValueError:
+        return await update.message.reply_text("Please provide a valid number.")
 
-    callback_data = f"begin_{user1.id}_{user2.id}_{amount}"
-    start_button = InlineKeyboardButton("Start Battle", callback_data=callback_data)
-    reply_markup = InlineKeyboardMarkup([[start_button]])
+    user_data = users.find_one({"_id": user.id})
+    if user_data["coins"] < amount:
+        return await update.message.reply_text("Not enough coins!")
+
+    context.user_data["battle_amount"] = amount
+    context.user_data["challenger_id"] = user.id
+    context.user_data["challenger_name"] = user.username
+
+    keyboard = [
+        [InlineKeyboardButton("Start Battle", callback_data="start_battle")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
     await update.message.reply_text(
-        f"⚔️ Battle Request ⚔️\n\n{user1.mention_html()} vs {user2.mention_html()}\n\nWager: {amount} coins each.\n\nWaiting for admin approval...",
-        reply_markup=reply_markup,
-        parse_mode="HTML"
+        f"User @{user.username} wants to battle with {amount} coins.\nWaiting for admin approval...",
+        reply_markup=reply_markup
     )
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# Admin button handlers
+async def button_handler(update: Update, context: CallbackContext.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    user_id = query.from_user.id
 
-    if query.data.startswith("begin_"):
-        if not is_admin(user_id):
-            return
+    user_id = update.effective_user.id
+    if user_id not in ADMINS:
+        return await query.edit_message_text("Only admins can start battles.")
 
-        _, uid1, uid2, amount = query.data.split("_")
-        uid1, uid2, amount = int(uid1), int(uid2), int(amount)
+    if query.data == "start_battle":
+        challenger = context.user_data.get("challenger_name", "Unknown")
+        amount = context.user_data.get("battle_amount", 0)
 
-        users.update_one({"user_id": uid1}, {"$inc": {"coins": -amount}})
-        users.update_one({"user_id": uid2}, {"$inc": {"coins": -amount}})
-
-        u1 = users.find_one({"user_id": uid1})
-        u2 = users.find_one({"user_id": uid2})
-
-        keyboard = [[
-            InlineKeyboardButton(f"Win: @{u1['username']}", callback_data=f"win_{uid1}_{uid2}_{amount}"),
-            InlineKeyboardButton("Draw", callback_data=f"draw_{uid1}_{uid2}_{amount}"),
-            InlineKeyboardButton(f"Win: @{u2['username']}", callback_data=f"win_{uid2}_{uid1}_{amount}")
-        ]]
+        keyboard = [
+            [InlineKeyboardButton("Winner: Challenger", callback_data="winner_challenger")],
+            [InlineKeyboardButton("Draw", callback_data="draw")]
+        ]
         reply_markup = InlineKeyboardMarkup(keyboard)
+
         await query.edit_message_text(
-            f"⚔️ <b>Battle Started</b> ⚔️\n\n@{u1['username']} vs @{u2['username']}\nWager: {amount} coins each.\nChoose the result:",
-            reply_markup=reply_markup,
-            parse_mode="HTML"
+            f"Battle started between @{challenger}!\nAmount: {amount} coins.\nChoose winner:",
+            reply_markup=reply_markup
         )
 
-    elif query.data.startswith("win_") or query.data.startswith("draw_"):
-        if not is_admin(user_id):
-            return
+    elif query.data == "winner_challenger":
+        challenger_id = context.user_data.get("challenger_id")
+        amount = context.user_data.get("battle_amount", 0)
+        users.update_one({"_id": challenger_id}, {"$inc": {"coins": amount}})
+        await query.edit_message_text("Battle ended. Winner is Challenger. Coins rewarded!")
 
-        action, uid1, uid2, amount = query.data.split("_")
-        uid1, uid2, amount = int(uid1), int(uid2), int(amount)
+    elif query.data == "draw":
+        await query.edit_message_text("Battle ended in a draw. No coins changed.")
 
-        if action == "win":
-            users.update_one({"user_id": uid1}, {"$inc": {"wins": 1, "coins": amount * 2}})
-            users.update_one({"user_id": uid2}, {"$inc": {"losses": 1}})
-            winner = users.find_one({'user_id': uid1})
-            await query.edit_message_text(f"🏆 <b>Winner:</b> @{winner['username']} wins {amount * 2} coins!", parse_mode="HTML")
-        else:
-            users.update_one({"user_id": uid1}, {"$inc": {"coins": amount}})
-            users.update_one({"user_id": uid2}, {"$inc": {"coins": amount}})
-            await query.edit_message_text("🤝 It's a draw! Both players refunded.", parse_mode="HTML")
+# Entry point
+if __name__ == '__main__':
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    top = users.find().sort("wins", -1).limit(10)
-    msg = "🏆 <b>Leaderboard</b> 🏆\n"
-    for idx, user in enumerate(top, 1):
-        uname = f"@{user['username']}" if user.get("username") else f"ID {user['user_id']}"
-        msg += f"{idx}. {uname} — Wins: {user['wins']}, Coins: {user['coins']}\n"
-    await update.message.reply_html(msg)
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("battle", battle))
+    app.add_handler(CallbackQueryHandler(button_handler))
 
-async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = get_user(update.message.from_user)
-    msg = f"You have {user['coins']} coins.\nWins: {user['wins']}, Losses: {user['losses']}"
-    await update.message.reply_text(msg)
-
-async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.message.from_user.id):
-        await update.message.reply_text("Only admins can add other admins.")
-        return
-
-    if update.message.reply_to_message:
-        user = update.message.reply_to_message.from_user
-        if not is_admin(user.id):
-            admin_data.insert_one({"user_id": user.id})
-            await update.message.reply_text(f"Added @{user.username or user.id} as admin.")
-        else:
-            await update.message.reply_text("User is already an admin.")
-    else:
-        await update.message.reply_text("Reply to the user you want to add as admin.")
-
-async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.message.from_user.id):
-        await update.message.reply_text("Only admins can remove other admins.")
-        return
-
-    if update.message.reply_to_message:
-        user = update.message.reply_to_message.from_user
-        if is_admin(user.id):
-            admin_data.delete_one({"user_id": user.id})
-            await update.message.reply_text(f"Removed @{user.username or user.id} as admin.")
-        else:
-            await update.message.reply_text("User is not an admin.")
-    else:
-        await update.message.reply_text("Reply to the user you want to remove as admin.")
-
-async def admin_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.message.from_user.id):
-        await update.message.reply_text("Only admins can give coins.")
-        return
-
-    if not context.args or not context.args[0].lstrip("+-").isdigit():
-        await update.message.reply_text("Usage:\n/coins +10 (when replying)\nor /coins @username +10")
-        return
-
-    amount = int(context.args[0])
-    target_user = None
-
-    if update.message.reply_to_message:
-        target = update.message.reply_to_message.from_user
-        target_user = users.find_one({"user_id": target.id})
-    else:
-        entities = update.message.entities
-        mention = next((e for e in entities if e.type == "mention"), None)
-        if mention:
-            username = update.message.text[mention.offset + 1: mention.offset + mention.length]
-            target_user = users.find_one({"username": username})
-
-    if not target_user:
-        await update.message.reply_text("User not found in database.")
-        return
-
-    users.update_one({"user_id": target_user["user_id"]}, {"$inc": {"coins": amount}})
-    msg = f"{'Gave' if amount > 0 else 'Took'} {abs(amount)} coins {'to' if amount > 0 else 'from'} @{target_user['username']}"
-    await update.message.reply_text(msg)
-
-# Set up the application using the builder pattern
-app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-# Add all handlers for commands and buttons
-app.add_handler(CommandHandler("battle", start_battle))
-app.add_handler(CommandHandler("leaderboard", leaderboard))
-app.add_handler(CommandHandler("balance", balance))
-app.add_handler(CommandHandler("addadmin", add_admin))
-app.add_handler(CommandHandler("removeadmin", remove_admin))
-app.add_handler(CommandHandler("coins", admin_coins))
-app.add_handler(CallbackQueryHandler(button_handler))
-
-if __name__ == "__main__":
     app.run_polling()
-                                                         
