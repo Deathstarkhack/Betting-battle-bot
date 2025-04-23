@@ -1,3 +1,4 @@
 python-telegram-bot==20.0
 pymongo==4.3.3
-flask==2.2.2  # Added Flask for health check
+flask==2.2.2
+werkzeug==2.0.3  # Downgrade Werkzeug to a compatible version
