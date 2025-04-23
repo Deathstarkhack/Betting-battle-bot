@@ -1,13 +1,15 @@
-from flask import Flask
-import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
-app = Flask(__name__)
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/health':
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b'OK')
+        else:
+            self.send_response(404)
+            self.end_headers()
 
-@app.route("/")
-def index():
-    return "OK"
-
-def run_flask():
-    app.run(host="0.0.0.0", port=8000)
-
-threading.Thread(target=run_flask).start()
+def start_health_server():
+    server = HTTPServer(('0.0.0.0', 8080), HealthHandler)
+    server.serve_forever()
