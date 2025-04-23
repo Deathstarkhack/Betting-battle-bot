@@ -1,11 +1,11 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 import pymongo
 import os
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
-ADMIN_IDS = [5925363190]  # You are the admin
+ADMIN_IDS = [5925363190]  # Replace with your Telegram ID
 
 client = pymongo.MongoClient(MONGO_URI)
 db = client["battle_bot"]
@@ -39,9 +39,14 @@ async def start_battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     u1_data = get_user(user1)
     u2_data = get_user(user2)
 
-    if u1_data["coins"] < 1 or u2_data["coins"] < 1:
-        await update.message.reply_text("Both players need at least 1 coin to battle!")
+    wager = 5
+    if u1_data["coins"] < wager or u2_data["coins"] < wager:
+        await update.message.reply_text("Both players need at least 5 coins to battle!")
         return
+
+    # Deduct wager immediately
+    users.update_one({"user_id": user1.id}, {"$inc": {"coins": -wager}})
+    users.update_one({"user_id": user2.id}, {"$inc": {"coins": -wager}})
 
     keyboard = [
         [
@@ -51,7 +56,7 @@ async def start_battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    msg = f"⚔️ <b>Battle Initiated!</b> ⚔️\n\n{user1.mention_html()} VS {user2.mention_html()}\n\nChoose the result:"
+    msg = f"⚔️ <b>Battle Initiated!</b> ⚔️\n\n{user1.mention_html()} VS {user2.mention_html()}\n\nEach wagered {wager} coins!\nChoose the result:"
     await update.message.reply_html(msg, reply_markup=reply_markup)
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -64,12 +69,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     data = query.data.split("_")
     action, winner_id, loser_id = data[0], int(data[1]), int(data[2])
+    wager = 5
     if action == "win":
-        users.update_one({"user_id": winner_id}, {"$inc": {"wins": 1, "coins": 1}})
-        users.update_one({"user_id": loser_id}, {"$inc": {"losses": 1, "coins": -1}})
-        await query.edit_message_text("Result: Victory granted!")
+        users.update_one({"user_id": winner_id}, {"$inc": {"wins": 1, "coins": wager * 2}})
+        users.update_one({"user_id": loser_id}, {"$inc": {"losses": 1}})
+        await query.edit_message_text("Result: Victory granted! Winner takes all the coins!")
     elif action == "draw":
-        await query.edit_message_text("Result: It's a draw!")
+        users.update_one({"user_id": winner_id}, {"$inc": {"coins": wager}})
+        users.update_one({"user_id": loser_id}, {"$inc": {"coins": wager}})
+        await query.edit_message_text("Result: It's a draw! Coins refunded.")
 
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     top = users.find().sort("wins", -1).limit(10)
@@ -89,25 +97,30 @@ async def admin_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Only admins can use this command.")
         return
 
-    if len(context.args) != 2 or not context.args[1].lstrip("+-").isdigit():
-        await update.message.reply_text("Usage: /coins @username +10 or -5")
+    if not context.args or not context.args[0].lstrip("+-").isdigit():
+        await update.message.reply_text("Usage:\n/coins @username +10\nor reply to user with /coins +10")
         return
 
-    entities = update.message.entities
-    mention = next((e for e in entities if e.type == "mention"), None)
-    if not mention:
-        await update.message.reply_text("Tag the user using @username.")
-        return
+    amount = int(context.args[0])
+    target_user = None
 
-    username = update.message.text[mention.offset+1 : mention.offset+mention.length]
-    target_user = users.find_one({"username": username})
+    if update.message.reply_to_message:
+        target = update.message.reply_to_message.from_user
+        target_user = users.find_one({"user_id": target.id})
+    else:
+        entities = update.message.entities
+        mention = next((e for e in entities if e.type == "mention"), None)
+        if mention:
+            username = update.message.text[mention.offset + 1: mention.offset + mention.length]
+            target_user = users.find_one({"username": username})
+
     if not target_user:
-        await update.message.reply_text("User not found in database. Make sure they've used the bot first.")
+        await update.message.reply_text("User not found in database.")
         return
 
-    amount = int(context.args[1])
-    users.update_one({"username": username}, {"$inc": {"coins": amount}})
-    await update.message.reply_text(f"{'Gave' if amount > 0 else 'Took'} {abs(amount)} coins {'to' if amount > 0 else 'from'} @{username}.")
+    users.update_one({"user_id": target_user["user_id"]}, {"$inc": {"coins": amount}})
+    msg = f"{'Gave' if amount > 0 else 'Took'} {abs(amount)} coins {'to' if amount > 0 else 'from'} @{target_user['username']}"
+    await update.message.reply_text(msg)
 
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 app.add_handler(CommandHandler("battle", start_battle))
