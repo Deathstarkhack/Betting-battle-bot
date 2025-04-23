@@ -5,17 +5,27 @@ import os
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
-ADMIN_IDS = [5925363190]  # <-- You are the admin
+ADMIN_IDS = [5925363190]  # You are the admin
 
 client = pymongo.MongoClient(MONGO_URI)
 db = client["battle_bot"]
 users = db["users"]
 
-def get_user(uid):
-    user = users.find_one({"user_id": uid})
+def get_user(user_obj):
+    user_id = user_obj.id
+    username = user_obj.username or f"id_{user_id}"
+    user = users.find_one({"user_id": user_id})
     if not user:
-        users.insert_one({"user_id": uid, "coins": 5, "wins": 0, "losses": 0})
-        user = users.find_one({"user_id": uid})
+        users.insert_one({
+            "user_id": user_id,
+            "username": username,
+            "coins": 5,
+            "wins": 0,
+            "losses": 0
+        })
+        user = users.find_one({"user_id": user_id})
+    else:
+        users.update_one({"user_id": user_id}, {"$set": {"username": username}})
     return user
 
 async def start_battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -26,8 +36,8 @@ async def start_battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user1 = update.message.from_user
     user2 = update.message.reply_to_message.from_user
 
-    u1_data = get_user(user1.id)
-    u2_data = get_user(user2.id)
+    u1_data = get_user(user1)
+    u2_data = get_user(user2)
 
     if u1_data["coins"] < 1 or u2_data["coins"] < 1:
         await update.message.reply_text("Both players need at least 1 coin to battle!")
@@ -65,12 +75,12 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     top = users.find().sort("wins", -1).limit(10)
     msg = "🏆 <b>Leaderboard</b> 🏆\n"
     for idx, user in enumerate(top, 1):
-        msg += f"{idx}. ID {user['user_id']} — Wins: {user['wins']}, Coins: {user['coins']}\n"
+        uname = f"@{user['username']}" if user.get("username") else f"ID {user['user_id']}"
+        msg += f"{idx}. {uname} — Wins: {user['wins']}, Coins: {user['coins']}\n"
     await update.message.reply_html(msg)
 
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.message.from_user.id
-    user = get_user(uid)
+    user = get_user(update.message.from_user)
     msg = f"You have {user['coins']} coins.\nWins: {user['wins']}, Losses: {user['losses']}"
     await update.message.reply_text(msg)
 
@@ -92,12 +102,12 @@ async def admin_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
     username = update.message.text[mention.offset+1 : mention.offset+mention.length]
     target_user = users.find_one({"username": username})
     if not target_user:
-        await update.message.reply_text("User not found in database.")
+        await update.message.reply_text("User not found in database. Make sure they've used the bot first.")
         return
 
     amount = int(context.args[1])
     users.update_one({"username": username}, {"$inc": {"coins": amount}})
-    await update.message.reply_text(f"Gave {amount} coins to @{username}")
+    await update.message.reply_text(f"{'Gave' if amount > 0 else 'Took'} {abs(amount)} coins {'to' if amount > 0 else 'from'} @{username}.")
 
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 app.add_handler(CommandHandler("battle", start_battle))
