@@ -5,10 +5,14 @@ import os
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
+
 client = pymongo.MongoClient(MONGO_URI)
 db = client["battle_bot"]
 users = db["users"]
 admin_data = db["admins"]
+
+# Make yourself admin (you can remove this later)
+admin_data.update_one({"user_id": 5925363190}, {"$set": {"user_id": 5925363190}}, upsert=True)
 
 def is_admin(user_id):
     return admin_data.find_one({"user_id": user_id}) is not None
@@ -100,7 +104,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if action == "win":
             users.update_one({"user_id": uid1}, {"$inc": {"wins": 1, "coins": amount * 2}})
             users.update_one({"user_id": uid2}, {"$inc": {"losses": 1}})
-            await query.edit_message_text(f"🏆 <b>Winner:</b> @{users.find_one({'user_id': uid1})['username']} wins {amount * 2} coins!", parse_mode="HTML")
+            winner = users.find_one({'user_id': uid1})
+            await query.edit_message_text(
+                f"🏆 <b>Winner:</b> @{winner['username']} wins {amount * 2} coins!",
+                parse_mode="HTML"
+            )
         else:
             users.update_one({"user_id": uid1}, {"$inc": {"coins": amount}})
             users.update_one({"user_id": uid2}, {"$inc": {"coins": amount}})
