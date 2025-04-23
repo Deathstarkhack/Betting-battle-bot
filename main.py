@@ -1,19 +1,34 @@
+import logging
+import threading
+import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
 import pymongo
-import os
+from health import start_health_server
 
+# Start health check server in a background thread
+threading.Thread(target=start_health_server, daemon=True).start()
+
+# Bot token and Mongo URI (use environment variables or replace with actual values)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 
+# MongoDB setup
 client = pymongo.MongoClient(MONGO_URI)
 db = client["battle_bot"]
 users = db["users"]
 admin_data = db["admins"]
 
+# Set up logging
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Function to check if user is admin
 def is_admin(user_id):
     return admin_data.find_one({"user_id": user_id}) is not None
 
+# Function to get user data from the database or create new user
 def get_user(user_obj):
     user_id = user_obj.id
     username = user_obj.username or f"id_{user_id}"
@@ -31,6 +46,7 @@ def get_user(user_obj):
         users.update_one({"user_id": user_id}, {"$set": {"username": username}})
     return user
 
+# Command to start a battle
 async def start_battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message.reply_to_message:
         await update.message.reply_text("Reply to a user to start a battle.")
@@ -60,6 +76,7 @@ async def start_battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="HTML"
     )
 
+# Button handler to approve the battle and results
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -107,6 +124,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             users.update_one({"user_id": uid2}, {"$inc": {"coins": amount}})
             await query.edit_message_text("🤝 It's a draw! Both players refunded.", parse_mode="HTML")
 
+# Command to show the leaderboard
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     top = users.find().sort("wins", -1).limit(10)
     msg = "🏆 <b>Leaderboard</b> 🏆\n"
@@ -115,11 +133,13 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += f"{idx}. {uname} — Wins: {user['wins']}, Coins: {user['coins']}\n"
     await update.message.reply_html(msg)
 
+# Command to show user balance
 async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = get_user(update.message.from_user)
     msg = f"You have {user['coins']} coins.\nWins: {user['wins']}, Losses: {user['losses']}"
     await update.message.reply_text(msg)
 
+# Command to add admin
 async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user.id):
         await update.message.reply_text("Only admins can add other admins.")
@@ -135,6 +155,7 @@ async def add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Reply to the user you want to add as admin.")
 
+# Command to remove admin
 async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user.id):
         await update.message.reply_text("Only admins can remove other admins.")
@@ -150,6 +171,7 @@ async def remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Reply to the user you want to remove as admin.")
 
+# Command to give/take coins from a user (only for admins)
 async def admin_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.message.from_user.id):
         await update.message.reply_text("Only admins can give coins.")
@@ -180,7 +202,10 @@ async def admin_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = f"{'Gave' if amount > 0 else 'Took'} {abs(amount)} coins {'to' if amount > 0 else 'from'} @{target_user['username']}"
     await update.message.reply_text(msg)
 
+# Set up the application with the bot token
 app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+# Add handlers
 app.add_handler(CommandHandler("battle", start_battle))
 app.add_handler(CommandHandler("leaderboard", leaderboard))
 app.add_handler(CommandHandler("balance", balance))
@@ -189,5 +214,6 @@ app.add_handler(CommandHandler("removeadmin", remove_admin))
 app.add_handler(CommandHandler("coins", admin_coins))
 app.add_handler(CallbackQueryHandler(button_handler))
 
+# Start polling to handle bot messages
 if __name__ == "__main__":
     app.run_polling()
