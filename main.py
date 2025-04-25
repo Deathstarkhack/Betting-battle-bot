@@ -184,6 +184,27 @@ async def admin_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = f"{'Gave' if amount > 0 else 'Took'} {abs(amount)} coins {'to' if amount > 0 else 'from'} @{target_user['username']}"
     await update.message.reply_text(msg)
 
+PORT = int(os.environ.get('PORT', 8080))
+WEBHOOK_URL = f"https://{your-koyeb-subdomain}.koyeb.app"  # replace with your actual Koyeb app URL
+
+app = ApplicationBuilder().token(BOT_TOKEN).build()
+
+async def start():
+    await app.bot.set_webhook(WEBHOOK_URL)
+    await app.initialize()
+    await app.start()
+    await app.updater.start_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path="",
+        webhook_url=WEBHOOK_URL,
+    )
+    await app.updater.idle()
+
+if __name__ == '__main__':
+    import asyncio
+    asyncio.run(start())
+    
 # Register commands
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 app.add_handler(CommandHandler("battle", start_battle))
