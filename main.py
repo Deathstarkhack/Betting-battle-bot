@@ -185,7 +185,7 @@ async def admin_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 PORT = int(os.environ.get('PORT', 8080))
-WEBHOOK_URL = f"https://{your-koyeb-subdomain}.koyeb.app"  # replace with your actual Koyeb app URL
+WEBHOOK_URL = f"https://promising-morgana-death-ebbe2d2c.koyeb.app"  # replace with your actual Koyeb app URL
 
 app = ApplicationBuilder().token(BOT_TOKEN).build()
 
